@@ -1,30 +1,8 @@
 import numpy as np 
 import pandas as pd 
 import matplotlib.pyplot as plt
-
-def sigmoid(Z):
-    return 1/(1 + np.exp(-Z))
-
-def softmax(Z):
-    return np.exp(Z)/(np.sum(np.exp(Z), axis = 0))
-
-def sigmoid_deriv(Z):
-    return sigmoid(Z) * (1 - sigmoid(Z))
-
-def softmax_deriv(Z):
-    return 1.0/(1 + np.exp(-Z))
-
-def ReLU(Z):
-    return np.maximum(Z, 0)
-
-def ReLU_deriv(Z):
-    deriv = Z
-    deriv[deriv<=0] = 0
-    deriv[deriv>0] = 1
-    return deriv
-
-def tanh_deriv(Z):
-    return (1 - np.tanh(Z) ** 2)
+import activation_funcs
+from activation_funcs import *
 
 class neural_network:
 
@@ -50,7 +28,7 @@ class neural_network:
 
             ## use He initialization 
             params['W' + str(i + 1)] = np.random.randn(n_cur, n_prev) * np.sqrt(2/n_prev)
-            params['b' + str(i + 1)] = 0 
+            params['b' + str(i + 1)] = np.zeros((n_cur, 1)) 
             n_prev = n_cur
 
         return params
@@ -96,8 +74,6 @@ class neural_network:
         #compute the cost
     def compute_cost(self, Y_hat, Y):
         assert(Y_hat.shape == Y.shape)
-
-        m = Y.shape[1]
         ## avoid infinity
         loss = - Y * np.log(Y_hat)
         #loss = - (Y * np.log(Y_hat + 0.001) + (1 - Y) * np.log(1 - Y_hat + 0.001))
@@ -148,47 +124,167 @@ class neural_network:
             return ReLU_deriv(Z)
 
 
+    ## parameter update step in momentum
+    def __update_parameters_momentum(self, derivs, derivs_M1, learning_rate, beta,current_step, bias_correction = True):
+        for i in range(self.length):
+            derivs_M1['dW' + str(i + 1)] = beta * derivs_M1['dW' + str(i + 1)] + (1-beta) * derivs['dW' + str(i+1)]
+            derivs_M1['db' + str(i + 1)] = beta * derivs_M1['db' + str(i + 1)] + (1-beta) * derivs['db' + str(i+1)]
+
+            adjusted_learning_rate = learning_rate
+
+            if bias_correction:
+                adjusted_learning_rate = learning_rate / (1 - beta ** current_step) 
+
+            self.params['W' + str(i + 1)] -= adjusted_learning_rate * derivs_M1['dW' + str(i+1)]
+            self.params['b' + str(i + 1)] -= adjusted_learning_rate * derivs_M1['db' + str(i+1)]
+
+            
+
+    ## parameter update step in RMSprop
+    def __update_parameters_RMSprop(self, derivs, derivs_M2, learning_rate, beta2, current_step, bias_correction = True):
+        for i in range(self.length):
+            epsilon = 1e-8
+
+            ## derivs_M2 <- second moment estimates of dW and db
+            derivs_M2['dW' + str(i+1)] = beta2 * derivs_M2['dW' + str(i+1)] + (1-beta2) * (derivs['dW' + str(i+1)] ** 2)
+            derivs_M2['db' + str(i+1)] = beta2 * derivs_M2['db' + str(i+1)] + (1-beta2) * (derivs['db' + str(i+1)] ** 2)
+
+            ## add a small number to denominator for numerical stability
+            dW_RMS_corrected = derivs['dW' + str(i+1)] / np.sqrt(derivs_M2['dW' + str(i+1)] + epsilon**2)
+            db_RMS_corrected = derivs['db' + str(i+1)] / np.sqrt(derivs_M2['db' + str(i+1)] + epsilon**2)
+
+            adjusted_learning_rate = learning_rate
+            if bias_correction:
+                # because 1/(1/a) = a
+                adjusted_learning_rate = learning_rate * np.sqrt((1 - beta2 ** current_step))
+            
+            self.params['W' + str(i + 1)] -= adjusted_learning_rate * dW_RMS_corrected
+            self.params['b' + str(i + 1)] -= adjusted_learning_rate * db_RMS_corrected
+
+
+    def __update_parameters_adam(self, derivs, derivs_M1, derivs_M2, learning_rate, beta1, beta2, current_step, bias_correction = True):
+
+        epsilon = 1e-8
+        for i in range(self.length):
+    
+            derivs_M1['dW' + str(i + 1)] = beta1 * derivs_M1['dW' + str(i + 1)] + (1-beta1) * derivs['dW' + str(i+1)]
+            derivs_M1['db' + str(i + 1)] = beta1 * derivs_M1['db' + str(i + 1)] + (1-beta1) * derivs['db' + str(i+1)]
+            
+            ## dW2_WMA <- second moment estimate of dW
+            ## db2_WMA <- second moment estimate of db
+            derivs_M2['dW' + str(i+1)] = beta2 * derivs_M2['dW' + str(i+1)] + (1-beta2) * (derivs['dW' + str(i+1)] ** 2)
+            derivs_M2['db' + str(i+1)] = beta2 * derivs_M2['db' + str(i+1)] + (1-beta2) * (derivs['db' + str(i+1)] ** 2)
+
+            if bias_correction:
+                dW_WMA_unbiased = derivs_M1['dW' + str(i + 1)] / (1 - beta1 ** current_step) 
+                db_WMA_unbiased = derivs_M1['db' + str(i + 1)] / (1 - beta1 ** current_step)
+
+                dW2_WMA_unbiased = derivs_M2['dW' + str(i+1)] / (1 - beta2 ** current_step)
+                db2_WMA_unbiased = derivs_M2['db' + str(i+1)] / (1 - beta2 ** current_step)
+            else:
+                dW_WMA_unbiased = derivs_M1['dW' + str(i + 1)] 
+                db_WMA_unbiased = derivs_M1['db' + str(i + 1)]
+
+                dW2_WMA_unbiased = derivs_M2['dW' + str(i+1)]
+                db2_WMA_unbiased = derivs_M2['db' + str(i+1)]
+
+
+            ## add a small number to denominator for numerical stability
+            
+            self.params['W' + str(i + 1)] -= (learning_rate * dW_WMA_unbiased / np.sqrt(dW2_WMA_unbiased + epsilon**2) )
+            self.params['b' + str(i + 1)] -= (learning_rate * db_WMA_unbiased / np.sqrt(db2_WMA_unbiased + epsilon**2) )
+
     ## update the parameters
-    def update_parameters(self, derivs, learning_rate = 0.01):
+    def __update_parameters_stochastic(self, derivs, learning_rate):
 
         for i in range(self.length):
             self.params['W' + str(i + 1)] -= learning_rate * derivs['dW' + str(i + 1)]
             self.params['b' + str(i + 1)] -= learning_rate * derivs['db' + str(i + 1)]
-        
 
 
-    ## train the neural network
-    def train(self, correct, data, learning_rate = 1.0, iterations = 300, print_cost = False):
+    def __initialize_adam(self):
+    
+        derivs_M1 = {}
+        derivs_M2 = {}
+        for i in range(self.length):
+            derivs_M1['dW' + str(i+1)] = np.zeros(self.params['W' + str(i+1)].shape)
+            derivs_M1['db' + str(i+1)] = np.zeros(self.params['b' + str(i+1)].shape)
 
+            derivs_M2['dW' + str(i+1)] = np.zeros(self.params['W' + str(i+1)].shape)
+            derivs_M2['db' + str(i+1)] = np.zeros(self.params['b' + str(i+1)].shape)
+
+        return derivs_M1, derivs_M2
+
+    def __initialize_momentum(self):
+    
+        derivs_M1 = {}
+        for i in range(self.length):
+            derivs_M1['dW' + str(i+1)] = np.zeros(self.params['W' + str(i+1)].shape)
+            derivs_M1['db' + str(i+1)] = np.zeros(self.params['b' + str(i+1)].shape)
+
+        return derivs_M1
+
+    def __initialize_RMSprop(self):
+
+        derivs_M2 = {}
+        for i in range(self.length):
+            derivs_M2['dW' + str(i+1)] = np.zeros(self.params['W' + str(i+1)].shape)
+            derivs_M2['db' + str(i+1)] = np.zeros(self.params['b' + str(i+1)].shape)
+
+        return derivs_M2
+
+    def __perform_gradient_descent(self, algorithm, learning_rate, data, labels, num_epochs, 
+    minibatch_size, bias_correction = None, beta1 = None, beta2 = None, print_cost = False, plot_cost = True):
         assert(self.params == None)
-        assert(correct.shape[0] == self.structure[-1])
-
+        assert(labels.shape[0] == self.structure[-1])
         self.params = self.initialize_parameters(data)
-        Y_hat = None
+        ## only those algorithms are supported as of now
+        assert(algorithm in {'stochastic_GD', 'Adam', 'RMSprop', 'momentum'})
         costs = []
-        #learning phase 
-        for i in range(iterations):
-            cache = self.forward_propagate(data)
 
-            Y_hat = cache['A' + str(self.length)]
+        if algorithm == 'Adam':
+            derivs_M1, derivs_M2 = self.__initialize_adam()
+        elif algorithm == 'RMSprop':
+            derivs_M2 = self.__initialize_RMSprop()
+        elif algorithm == 'momentum':
+            derivs_M1 = self.__initialize_momentum()
 
-            cost = self.compute_cost(Y_hat, correct)
-
-            derivs = self.backward_propagate(correct, data, cache)
-
-            self.update_parameters(derivs, learning_rate)
-
-            costs.append(cost)
+        current_step = 0
+        for epoch in range(1, num_epochs+1):
             
-            if(print_cost):
-                print('cost after {} iterations: {}'.format(i, cost))
+            minibatches = self.__get_shuffled_minibatches(data, labels, minibatch_size)
+
+            for minibatch in minibatches:
+
+                
+                current_step += 1
+                ## get the minibatches 
+                (X_batch, Y_batch) = minibatch
+
+                cache = self.forward_propagate(X_batch)
+
+                Y_hat_batch = cache['A' + str(self.length)]
+                
+                cost = self.compute_cost(Y_hat_batch, Y_batch)
+
+                derivs = self.backward_propagate(Y_batch, X_batch, cache)
+                if algorithm == 'stochastic_GD':
+                    self.__update_parameters_stochastic(derivs, learning_rate)
+                elif algorithm == 'Adam':
+                    self.__update_parameters_adam(derivs, derivs_M1, derivs_M2, 
+                    learning_rate, beta1, beta2, current_step, bias_correction)
+                elif algorithm == 'RMSprop':
+                    self.__update_parameters_RMSprop(derivs, derivs_M2, learning_rate, 
+                    beta2, current_step, bias_correction)
+                elif algorithm == 'momentum':
+                    self.__update_parameters_momentum(derivs, derivs_M1, learning_rate, beta1, current_step, bias_correction)
 
 
-        if(print_cost):
-            cost = self.compute_cost(Y_hat, correct) 
-            print(cost)
+            if print_cost:
+                    costs.append(cost)
+                    print('cost after {} epochs: {}'.format(epoch, cost))
 
-        ## plot the costs
+        # plot the costs
         plt.plot(costs)
         plt.ylabel('cost')
         plt.xlabel('# of iterations')
@@ -210,7 +306,9 @@ class neural_network:
         correct_percentage = np.round_((np.mean(predictions == correct)) * 100, decimals = 2)
         print('correctly identified {}% digits'.format(correct_percentage))
 
-    def get_shuffled_minibatches(self, X, Y, minibatch_size):
+
+    ## permutes the dataset and divides it into minibatches
+    def __get_shuffled_minibatches(self, X, Y, minibatch_size):
         m = X.shape[1]
         mini_batches = []
 
@@ -235,63 +333,40 @@ class neural_network:
         return mini_batches
 
 
-        
+    def train_stochastic_GD(self, data, labels, learning_rate = 0.1, num_epochs = 10, minibatch_size = 64, 
+    print_cost = True, plot_cost = True):
+        assert(labels.shape[0] == self.structure[-1])
+
+        return self.__perform_gradient_descent(algorithm = 'stochastic_GD', data = data, labels = labels, 
+        learning_rate = learning_rate, num_epochs = num_epochs, minibatch_size = minibatch_size, 
+        print_cost = print_cost, plot_cost = plot_cost)
 
 
-    def minibatch_gradient_descent(self, correct, data, num_epochs = 100, learning_rate = 0.1, minibatch_size = 64, learning_rate_decay = True, print_cost = False):
-        assert(self.params == None)
-        assert(correct.shape[0] == self.structure[-1])
-        self.params = self.initialize_parameters(data)
+    def train_adam(self, data, labels, learning_rate = 0.1, num_epochs = 10, minibatch_size = 64, beta1 = 0.9, beta2 = 0.999, 
+    bias_correction = True, print_cost = True, plot_cost = True):
+        assert(0 < beta1 < 1)
+        assert(0 < beta2 < 1)
+        assert(labels.shape[0] == self.structure[-1])
 
-        costs = []
-        early_stop = False
-        lr_original = learning_rate
-        
-        ## for cost tracking
-        current_iteration = 0
-        for epoch in range(num_epochs):
-            #### learning rate decay 
-            #learning_rate = lr_original/(1 + 10*epoch)
-            #param = 1/20
-            #learning_rate = param**(epoch) * lr_original
-            ###
-            minibatches = self.get_shuffled_minibatches(data, correct, minibatch_size)
+        return self.__perform_gradient_descent(algorithm = 'Adam', data = data, labels = labels, 
+        learning_rate = learning_rate, num_epochs = num_epochs, bias_correction = bias_correction,
+        minibatch_size = minibatch_size, print_cost = print_cost, plot_cost = plot_cost, beta1 = beta1, beta2 = beta2)
 
-            for minibatch in minibatches:
+    
+    def train_RMSprop(self, data, labels, learning_rate = 0.1, num_epochs = 10, minibatch_size = 64, beta2 = 0.999,
+    bias_correction = True, print_cost = True, plot_cost = True):
+        assert(labels.shape[0] == self.structure[-1])
+        assert(0 < beta2 < 1)
 
-                
-                current_iteration += 1
-                ## get the minibatches 
-                (X_batch, Y_batch) = minibatch
+        return self.__perform_gradient_descent(algorithm = 'RMSprop', data = data, labels = labels, 
+        learning_rate = learning_rate, num_epochs = num_epochs, bias_correction = bias_correction,
+        minibatch_size = minibatch_size, print_cost = print_cost, plot_cost = plot_cost, beta2 = beta2)
 
-                cache = self.forward_propagate(X_batch)
+    def train_momentum(self, data, labels, learning_rate = 0.1, num_epochs = 10, minibatch_size = 64, 
+    beta = 0.9, bias_correction = True, print_cost = True, plot_cost = True):
+        assert(labels.shape[0] == self.structure[-1])
+        assert(0 < beta < 1)
 
-                Y_hat_batch = cache['A' + str(self.length)]
-                
-                cost = self.compute_cost(Y_hat_batch, Y_batch)
-
-                #self.process_minibatch(Y_hat[minibatch_size * batch: (minibatch_size + 1) * batch, :], data)
-                derivs = self.backward_propagate(Y_batch, X_batch, cache)
-                self.update_parameters(derivs, learning_rate)
-
-                
-
-                #if(cost < 0.006):
-                    #early_stop = True
-                   # break
-            
-
-            if(print_cost):
-                    costs.append(cost)
-                    print('cost after {} epochs: {}'.format(epoch, cost))
-
-            #if(early_stop):
-                #break
-
-        # plot the costs
-        plt.plot(costs)
-        plt.ylabel('cost')
-        plt.xlabel('# of iterations')
-        plt.show()
-        return self.params
-            
+        return self.__perform_gradient_descent(algorithm = 'momentum', data = data, labels = labels, 
+        learning_rate = learning_rate, num_epochs = num_epochs, bias_correction = bias_correction,
+        minibatch_size = minibatch_size, print_cost = print_cost, plot_cost = plot_cost, beta1  = beta)
